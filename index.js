@@ -58,47 +58,60 @@ function updateUser(userId, data) {
   );
 }
 
-// Ollama
-// ИЗМЕНЕНО: функция теперь принимает историю диалога
-// Ollama
-// Функция для обращения к облачному AI (Groq)
-// Функция для обращения к облачному AI (Groq)
-async function askCloudAI(history, system) {
+const { OpenAI } = require('openai');
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// Универсальная функция для обращения к разным AI
+async function askAI(history, system) {
+  const provider = process.env.AI_PROVIDER || 'groq'; // По умолчанию Groq
+
+  // Формируем массив сообщений в формате, который нужен обоим провайдерам
   const messages = [
     { role: "system", content: system },
     ...history
   ];
 
-  console.log('Запрос в Groq →', JSON.stringify(messages).substring(0, 200) + '...');
+  console.log(`Запрос в ${provider} →`, JSON.stringify(messages).substring(0, 200) + '...');
 
   try {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: 'llama-3.1-8b-instant', // <-- ИЗМЕНЕНО НА АКТУАЛЬНУЮ МОДЕЛЬ
+    if (provider === 'openai') {
+      // --- ЛОГИКА ДЛЯ OPENAI (GPT-4o) ---
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o',
         messages: messages,
         temperature: 0.7,
         max_tokens: 300,
-      })
-    });
+      });
+      return response.choices[0].message.content.trim();
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('Groq API ошибка:', response.status, errorData);
-      return 'ИИ-сервис временно недоступен. Попробуй позже.';
+    } else {
+      // --- ЛОГИКА ДЛЯ GROQ (по умолчанию) ---
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'llama-3.1-8b-instant',
+          messages: messages,
+          temperature: 0.7,
+          max_tokens: 300,
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Groq API ошибка:', response.status, errorData);
+        return 'ИИ-сервис временно недоступен. Попробуй позже.';
+      }
+
+      const data = await response.json();
+      return data.choices[0].message.content.trim();
     }
 
-    const data = await response.json();
-    const answer = data.choices[0].message.content.trim();
-    console.log('Groq ответил:', answer.substring(0, 100) + '...');
-    return answer || 'Я задумался...';
-
   } catch (error) {
-    console.error('Ошибка при запросе к Groq:', error.message);
+    console.error(`Ошибка при запросе к ${provider}:`, error.message);
     return 'Произошла ошибка связи с ИИ-сервисом.';
   }
 }
@@ -150,7 +163,7 @@ bot.on('text', async (ctx) => {
     const char = characters.find(c => c.id === user.current_char);
     
     user.history.push({ role: 'user', content: ctx.message.text });
-    const answer = await askCloudAI(user.history, char.system);
+    const answer = await askAI(user.history, char.system);
     user.history.push({ role: 'assistant', content: answer });
 
     if (user.history.length > 10) {
@@ -219,7 +232,6 @@ process.once('SIGTERM', () => {
     bot.stop('SIGTERM');
   });
 });
-
 
 
 console.log('TimeTravel Bot запущен! Иди в Telegram → /start');
