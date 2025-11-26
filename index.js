@@ -1,10 +1,15 @@
+// ===================================================================
+// ШАГ 1: ПОДКЛЮЧЕНИЕ БИБЛИОТЕК
+// ===================================================================
 require('dotenv').config();
 const fs = require('fs');
 const { Telegraf } = require('telegraf');
 const fetch = require('node-fetch');
 const sqlite3 = require('sqlite3').verbose();
 
-// Загружаем данные из JSON-файлов
+// ===================================================================
+// ШАГ 2: ЗАГРУЗКА ДАННЫХ И ИНИЦИАЛИЗАЦИЯ
+// ===================================================================
 const characters = JSON.parse(fs.readFileSync('characters.json', 'utf8'));
 const sources = JSON.parse(fs.readFileSync('sources.json', 'utf8'));
 
@@ -12,7 +17,23 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const dbPath = process.env.DATA_DIR ? `${process.env.DATA_DIR}/users.db` : './users.db';
 const db = new sqlite3.Database(dbPath);
 
-// Универсальная функция для обращения к разным AI
+// Инициализация БД (создаем таблицу, если ее нет)
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    messages INTEGER DEFAULT 0,
+    unlocked TEXT DEFAULT 'einstein',
+    current_char TEXT DEFAULT NULL,
+    history TEXT DEFAULT '[]'
+  )`);
+  console.log('База данных готова к работе.');
+});
+
+// ===================================================================
+// ШАГ 3: ОПРЕДЕЛЕНИЕ ВСЕХ ФУНКЦИЙ
+// ===================================================================
+
+// Функция для обращения к разным AI (Groq или OpenAI)
 async function askAI(history, system) {
   const provider = process.env.AI_PROVIDER || 'groq'; // По умолчанию Groq
 
@@ -25,13 +46,11 @@ async function askAI(history, system) {
 
   try {
     if (provider === 'openai') {
-      // Проверяем, есть ли ключ
       if (!process.env.OPENAI_API_KEY) {
         console.error('КРИТИЧЕСКАЯ ОШИБКА: AI_PROVIDER=openai, но OPENAI_API_KEY не найден!');
         return 'Ошибка конфигурации: ключ OpenAI не найден.';
       }
       
-      // СОЗДАЕМ КЛИЕНТ OPENAI ТОЛЬКО СЕЙЧАС, ВНУТРИ IF
       const { OpenAI } = require('openai');
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -44,7 +63,6 @@ async function askAI(history, system) {
       return response.choices[0].message.content.trim();
 
     } else {
-      // --- ЛОГИКА ДЛЯ GROQ (по умолчанию) ---
       const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -75,12 +93,48 @@ async function askAI(history, system) {
   }
 }
 
+// Функция для получения данных пользователя из БД
+async function getUser(userId) {
+  return new Promise((resolve) => {
+    db.get(`SELECT * FROM users WHERE user_id = ?`, [userId], (err, row) => {
+      if (err) {
+        console.error('ОШИБКА БД:', err.message);
+        resolve({ user_id: userId, messages: 0, unlocked: ['einstein'], current_char: null, history: [] });
+        return;
+      }
+      if (row) {
+        row.unlocked = row.unlocked ? row.unlocked.split(',') : ['einstein'];
+        row.history = row.history ? JSON.parse(row.history) : [];
+        resolve(row);
+      } else {
+        db.run(`INSERT INTO users (user_id) VALUES (?)`, [userId]);
+        resolve({ user_id: userId, messages: 0, unlocked: ['einstein'], current_char: null, history: [] });
+      }
+    });
+  });
+}
 
-// /start
+// Функция для обновления данных пользователя в БД
+function updateUser(userId, data) {
+  db.run(
+    `UPDATE users SET messages = ?, unlocked = ?, current_char = ?, history = ? WHERE user_id = ?`,
+    [data.messages, data.unlocked.join(','), data.current_char || null, JSON.stringify(data.history), userId],
+    (err) => {
+      if (err) console.error('ОШИБКА БД:', err.message);
+    }
+  );
+}
+
+
+// ===================================================================
+// ШАГ 4: ОБРАБОТЧИКИ КОМАНД И СООБЩЕНИЙ
+// ===================================================================
+
+// Команда /start
 bot.start(async (ctx) => {
   const user = await getUser(ctx.from.id);
   const keyboard = characters.map(ch => [{
-    text: (user.unlocked.includes(ch.id) ? '✅ ' : '🔒 ') + ch.name, // Небольшое улучшение UI
+    text: (user.unlocked.includes(ch.id) ? '✅ ' : '🔒 ') + ch.name,
     callback_data: ch.id
   }]);
 
@@ -90,28 +144,49 @@ bot.start(async (ctx) => {
   );
 });
 
-// Выбор персонажа
+// Обработка нажатий на кнопки (выбор персонажа и интерактивные кнопки)
 bot.on('callback_query', async (ctx) => {
-  const charId = ctx.callbackQuery.data;
-  const character = characters.find(c => c.id === charId);
+  const action = ctx.callbackQuery.data;
   const user = await getUser(ctx.from.id);
 
+  // --- Обработка интерактивных кнопок Эйнштейна ---
+  if (action.startsWith('einstein_')) {
+    await ctx.answerCbQuery();
+    
+    let promptForAI = "";
+    if (action === 'einstein_paradox') {
+      promptForAI = "Расскажи мне о самых известных парадоксах теории относительности.";
+    } else if (action === 'einstein_proof') {
+      promptForAI = "Как экспериментально доказали формулу E=mc²?";
+    } else if (action === 'einstein_change_topic') {
+      promptForAI = "Давай сменим тему. Расскажи мне что-нибудь интересное о твоей жизни в Принстоне.";
+    }
+
+    user.history.push({ role: 'user', content: promptForAI });
+    const char = characters.find(c => c.id === user.current_char);
+    const answer = await askAI(user.history, char.system);
+    user.history.push({ role: 'assistant', content: answer });
+    updateUser(ctx.from.id, user);
+
+    await ctx.reply(answer);
+    return; // Важно, чтобы не идти дальше
+  }
+
+  // --- СТАРАЯ ЛОГИКА ВЫБОРА ПЕРСОНАЖА ---
+  const character = characters.find(c => c.id === action);
+
   if (!character) return ctx.answerCbQuery('Ошибка');
-  // ИСПРАВЛЕНИЕ 1: Проверяем ID, а не весь объект
   if (!user.unlocked.includes(character.id)) return ctx.answerCbQuery('Этот персонаж еще не разблокирован!');
 
-  user.current_char = charId;
+  user.current_char = action;
   user.history = []; // Сбрасываем историю при смене персонажа
   updateUser(ctx.from.id, user);
 
   await ctx.answerCbQuery(`Выбран: ${character.name}`);
-  // ИСПРАВЛЕНИЕ 2: Используем правильное имя переменной 'character'
   await ctx.reply(`Ты общаешься с *${character.name}*\n\n${character.greeting || "Пиши что угодно!"}`, { parse_mode: 'Markdown' });
 });
 
-// Сообщения
-// Сообщения
-// Сообщения
+// Обработка текстовых сообщений
 bot.on('text', async (ctx) => {
   try {
     const user = await getUser(ctx.from.id);
@@ -130,6 +205,33 @@ bot.on('text', async (ctx) => {
         user.history = user.history.slice(-10);
     }
 
+    // --- ЛОГИКА ДЛЯ ССЫЛОК У ЭЙНШТЕЙНА ---
+    let finalMessage = answer;
+    if (char.id === 'einstein') {
+      if (answer.toLowerCase().includes('поделиться ссылкой') || answer.toLowerCase().includes('подробный материал')) {
+        for (const topic in sources) {
+          if (answer.toLowerCase().includes(topic)) {
+            finalMessage += `\n\n🔗 Вот полезная ссылка по теме: ${sources[topic]}`;
+            break;
+          }
+        }
+      }
+    }
+    
+    // --- ЛОГИКА ДЛЯ КНОПОК У ЭЙНШТЕЙНА ---
+    let keyboard = null;
+    if (answer.includes('[OFFER_BUTTONS]')) {
+      finalMessage = answer.replace('[OFFER_BUTTONS]', '').trim();
+      keyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🤔 Расскажи про парадоксы", callback_data: "einstein_paradox" }, { text: "🧪 А как это доказали?", callback_data: "einstein_proof" }],
+            [{ text: "Достаточно, давай другое", callback_data: "einstein_change_topic" }]
+          ]
+        }
+      };
+    }
+
     user.messages += 1;
     let newUnlock = null;
     for (const ch of characters) {
@@ -145,38 +247,23 @@ bot.on('text', async (ctx) => {
       await ctx.reply(`Поздравляю! Ты разблокировал нового персонажа: *${newUnlock}*!`, { parse_mode: 'Markdown' });
     }
 
-    // --- НОВАЯ ЛОГИКА ДЛЯ ССЫЛОК ---
-    let finalMessage = answer;
-    if (char.id === 'einstein') {
-      // Проверяем, содержит ли ответ ключевую фразу
-      if (answer.toLowerCase().includes('поделиться ссылкой') || answer.toLowerCase().includes('подробный материал')) {
-        // Ищем, какая тема из нашего словаря есть в ответе
-        for (const topic in sources) {
-          if (answer.toLowerCase().includes(topic)) {
-            finalMessage += `\n\n🔗 Вот полезная ссылка по теме: ${sources[topic]}`;
-            break; // Добавляем только одну ссылку
-          }
-        }
-      }
-    }
-
-    await ctx.reply(finalMessage);
+    await ctx.reply(finalMessage, keyboard);
 
   } catch (error) {
     console.error('Критическая ошибка при обработке сообщения:', error);
-    await ctx.reply('Вынужден отлучиться ненадолго.');
+    await ctx.reply('Упс, что-то пошло не так. Попробуй задать вопрос еще раз.');
   }
 });
 
-// ЗАПУСК с корректным завершением
+// ===================================================================
+// ШАГ 5: ЗАПУСК БОТА
+// ===================================================================
 bot.launch();
 
 process.once('SIGINT', () => {
   console.log("\nПолучен SIGINT. Останавливаю бота...");
   db.close((err) => {
-    if (err) {
-      console.error(err.message);
-    }
+    if (err) console.error(err.message);
     console.log('Соединение с БД закрыто.');
     bot.stop('SIGINT');
   });
@@ -185,13 +272,10 @@ process.once('SIGINT', () => {
 process.once('SIGTERM', () => {
   console.log("\nПолучен SIGTERM. Останавливаю бота...");
   db.close((err) => {
-    if (err) {
-      console.error(err.message);
-    }
+    if (err) console.error(err.message);
     console.log('Соединение с БД закрыто.');
     bot.stop('SIGTERM');
   });
 });
-
 
 console.log('TimeTravel Bot запущен! Иди в Telegram → /start');
