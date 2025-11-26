@@ -4,7 +4,7 @@ const { Telegraf } = require('telegraf');
 const fetch = require('node-fetch');
 const sqlite3 = require('sqlite3').verbose();
 
-// Загружаем данные из JSON-файлов ПОСЛЕ того, как подключили `fs`
+// Загружаем данные из JSON-файлов
 const characters = JSON.parse(fs.readFileSync('characters.json', 'utf8'));
 const sources = JSON.parse(fs.readFileSync('sources.json', 'utf8'));
 
@@ -12,60 +12,10 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const dbPath = process.env.DATA_DIR ? `${process.env.DATA_DIR}/users.db` : './users.db';
 const db = new sqlite3.Database(dbPath);
 
-// ИНИЦИАЛИЗАЦИЯ БД (создаем таблицу, если ее нет)
-db.serialize(() => {
-  // ИЗМЕНЕНО: Удаляем DROP TABLE, чтобы не терять данные
-  db.run(`CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    messages INTEGER DEFAULT 0,
-    unlocked TEXT DEFAULT 'einstein',
-    current_char TEXT DEFAULT NULL,
-    history TEXT DEFAULT '[]' -- НОВОЕ: колонка для истории диалога
-  )`);
-  console.log('База данных готова к работе.');
-});
-
-// ПОЛУЧИТЬ ЮЗЕРА
-async function getUser(userId) {
-  return new Promise((resolve) => {
-    db.get(`SELECT * FROM users WHERE user_id = ?`, [userId], (err, row) => {
-      if (err) {
-        console.error('ОШИБКА БД:', err.message);
-        resolve({ user_id: userId, messages: 0, unlocked: ['einstein'], current_char: null, history: [] });
-        return;
-      }
-      if (row) {
-        row.unlocked = row.unlocked ? row.unlocked.split(',') : ['einstein'];
-        row.history = row.history ? JSON.parse(row.history) : []; // НОВОЕ
-        resolve(row);
-      } else {
-        db.run(`INSERT INTO users (user_id) VALUES (?)`, [userId]);
-        resolve({ user_id: userId, messages: 0, unlocked: ['einstein'], current_char: null, history: [] });
-      }
-    });
-  });
-}
-
-// ОБНОВИТЬ ЮЗЕРА
-function updateUser(userId, data) {
-  // console.log('СОХРАНЯЕМ:', { userId, current_char: data.current_char }); // Можно оставить для отладки
-  db.run(
-    `UPDATE users SET messages = ?, unlocked = ?, current_char = ?, history = ? WHERE user_id = ?`,
-    [data.messages, data.unlocked.join(','), data.current_char || null, JSON.stringify(data.history), userId], // НОВОЕ
-    (err) => {
-      if (err) console.error('ОШИБКА БД:', err.message);
-    }
-  );
-}
-
-const { OpenAI } = require('openai');
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 // Универсальная функция для обращения к разным AI
 async function askAI(history, system) {
   const provider = process.env.AI_PROVIDER || 'groq'; // По умолчанию Groq
 
-  // Формируем массив сообщений в формате, который нужен обоим провайдерам
   const messages = [
     { role: "system", content: system },
     ...history
@@ -75,7 +25,16 @@ async function askAI(history, system) {
 
   try {
     if (provider === 'openai') {
-      // --- ЛОГИКА ДЛЯ OPENAI (GPT-4o) ---
+      // Проверяем, есть ли ключ
+      if (!process.env.OPENAI_API_KEY) {
+        console.error('КРИТИЧЕСКАЯ ОШИБКА: AI_PROVIDER=openai, но OPENAI_API_KEY не найден!');
+        return 'Ошибка конфигурации: ключ OpenAI не найден.';
+      }
+      
+      // СОЗДАЕМ КЛИЕНТ OPENAI ТОЛЬКО СЕЙЧАС, ВНУТРИ IF
+      const { OpenAI } = require('openai');
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
       const response = await openai.chat.completions.create({
         model: 'gpt-4o',
         messages: messages,
@@ -115,6 +74,7 @@ async function askAI(history, system) {
     return 'Произошла ошибка связи с ИИ-сервисом.';
   }
 }
+
 
 // /start
 bot.start(async (ctx) => {
