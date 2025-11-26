@@ -258,24 +258,28 @@ bot.on('text', async (ctx) => {
 // ===================================================================
 // ШАГ 5: ЗАПУСК БОТА
 // ===================================================================
-bot.launch();
-
-process.once('SIGINT', () => {
-  console.log("\nПолучен SIGINT. Останавливаю бота...");
-  db.close((err) => {
-    if (err) console.error(err.message);
-    console.log('Соединение с БД закрыто.');
-    bot.stop('SIGINT');
-  });
-});
-
-process.once('SIGTERM', () => {
-  console.log("\nПолучен SIGTERM. Останавливаю бота...");
-  db.close((err) => {
-    if (err) console.error(err.message);
-    console.log('Соединение с БД закрыто.');
-    bot.stop('SIGTERM');
-  });
-});
 
 console.log('TimeTravel Bot запущен! Иди в Telegram → /start');
+// ===================================================================
+// ШАГ 6: "Заглушка" для Render, чтобы он не ругался на порт
+// ===================================================================
+// Это нужно, чтобы Render думал, что это веб-сервер.
+// Бот по-прежнему будет работать через Telegram API.
+const PORT = process.env.PORT || 3000;
+bot.launch({
+  webhook: {
+    domain: process.env.RENDER_EXTERNAL_URL,
+    port: PORT
+  }
+});
+
+// Создаем простой сервер, чтобы отвечать на проверки Render
+const http = require('http');
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot is running');
+});
+
+server.listen(PORT, () => {
+  console.log(`Сервер для health-check'ов запущен на порту ${PORT}`);
+});
