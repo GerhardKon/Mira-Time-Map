@@ -1,4 +1,18 @@
 // ===================================================================
+// TimeTravel Bot - Финальная версия
+// Автор: Gerhard Kon
+// AI-помощник: GPT-4
+//
+// ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ (Environment Variables):
+// BOT_TOKEN - Токен твоего бота от @BotFather
+// GROQ_API_KEY - Ключ от Groq (для быстрого и дешевого AI)
+// OPENAI_API_KEY - Ключ от OpenAI (для мощного GPT-4o)
+// AI_PROVIDER - 'groq' или 'openai' (по умолчанию 'groq')
+// DATA_DIR - Путь к постоянному диску (автоматически на Render)
+//
+// ===================================================================
+
+// ===================================================================
 // ШАГ 1: ПОДКЛЮЧЕНИЕ БИБЛИОТЕК
 // ===================================================================
 require('dotenv').config();
@@ -10,14 +24,17 @@ const sqlite3 = require('sqlite3').verbose();
 // ===================================================================
 // ШАГ 2: ЗАГРУЗКА ДАННЫХ И ИНИЦИАЛИЗАЦИЯ
 // ===================================================================
+
+// Загружаем персонажей и источники из JSON-файлов
 const characters = JSON.parse(fs.readFileSync('characters.json', 'utf8'));
 const sources = JSON.parse(fs.readFileSync('sources.json', 'utf8'));
 
+// Инициализируем бота и базу данных
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const dbPath = process.env.DATA_DIR ? `${process.env.DATA_DIR}/users.db` : './users.db';
 const db = new sqlite3.Database(dbPath);
 
-// Инициализация БД (создаем таблицу, если ее нет)
+// Создаем таблицу в БД, если она еще не существует
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -33,7 +50,12 @@ db.serialize(() => {
 // ШАГ 3: ОПРЕДЕЛЕНИЕ ВСЕХ ФУНКЦИЙ
 // ===================================================================
 
-// Функция для обращения к разным AI (Groq или OpenAI)
+/**
+ * Отправляет запрос к выбранному AI-провайдеру (Groq или OpenAI).
+ * @param {Array} history - История диалога.
+ * @param {string} system - Системный промпт персонажа.
+ * @returns {Promise<string>} - Ответ от AI.
+ */
 async function askAI(history, system) {
   const provider = process.env.AI_PROVIDER || 'groq'; // По умолчанию Groq
 
@@ -46,11 +68,13 @@ async function askAI(history, system) {
 
   try {
     if (provider === 'openai') {
+      // Проверяем наличие ключа перед использованием
       if (!process.env.OPENAI_API_KEY) {
         console.error('КРИТИЧЕСКАЯ ОШИБКА: AI_PROVIDER=openai, но OPENAI_API_KEY не найден!');
         return 'Ошибка конфигурации: ключ OpenAI не найден.';
       }
       
+      // "Ленивая" инициализация клиента OpenAI
       const { OpenAI } = require('openai');
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -63,6 +87,7 @@ async function askAI(history, system) {
       return response.choices[0].message.content.trim();
 
     } else {
+      // Логика для Groq
       const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -93,7 +118,11 @@ async function askAI(history, system) {
   }
 }
 
-// Функция для получения данных пользователя из БД
+/**
+ * Получает данные пользователя из БД. Если пользователя нет, создает его.
+ * @param {number} userId - ID пользователя в Telegram.
+ * @returns {Promise<Object>} - Объект с данными пользователя.
+ */
 async function getUser(userId) {
   return new Promise((resolve) => {
     db.get(`SELECT * FROM users WHERE user_id = ?`, [userId], (err, row) => {
@@ -114,7 +143,11 @@ async function getUser(userId) {
   });
 }
 
-// Функция для обновления данных пользователя в БД
+/**
+ * Обновляет данные пользователя в БД.
+ * @param {number} userId - ID пользователя.
+ * @param {Object} data - Новые данные для обновления.
+ */
 function updateUser(userId, data) {
   db.run(
     `UPDATE users SET messages = ?, unlocked = ?, current_char = ?, history = ? WHERE user_id = ?`,
@@ -124,7 +157,6 @@ function updateUser(userId, data) {
     }
   );
 }
-
 
 // ===================================================================
 // ШАГ 4: ОБРАБОТЧИКИ КОМАНД И СООБЩЕНИЙ
@@ -144,7 +176,7 @@ bot.start(async (ctx) => {
   );
 });
 
-// Обработка нажатий на кнопки (выбор персонажа и интерактивные кнопки)
+// Обработка нажатий на кнопки
 bot.on('callback_query', async (ctx) => {
   const action = ctx.callbackQuery.data;
   const user = await getUser(ctx.from.id);
@@ -197,10 +229,14 @@ bot.on('text', async (ctx) => {
 
     const char = characters.find(c => c.id === user.current_char);
     
+    // Добавляем сообщение пользователя в историю
     user.history.push({ role: 'user', content: ctx.message.text });
+    
+    // Получаем ответ от AI
     const answer = await askAI(user.history, char.system);
     user.history.push({ role: 'assistant', content: answer });
 
+    // Ограничиваем историю
     if (user.history.length > 10) {
         user.history = user.history.slice(-10);
     }
@@ -232,6 +268,7 @@ bot.on('text', async (ctx) => {
       };
     }
 
+    // Обновляем счетчик сообщений и проверяем разблокировки
     user.messages += 1;
     let newUnlock = null;
     for (const ch of characters) {
@@ -256,24 +293,14 @@ bot.on('text', async (ctx) => {
 });
 
 // ===================================================================
-// ШАГ 5: ЗАПУСК БОТА
+// ШАГ 5: ЗАПУСК БОТА И СЕРВЕРА ДЛЯ RENDER
 // ===================================================================
 
-console.log('TimeTravel Bot запущен! Иди в Telegram → /start');
-// ===================================================================
-// ШАГ 6: "Заглушка" для Render, чтобы он не ругался на порт
-// ===================================================================
-// Это нужно, чтобы Render думал, что это веб-сервер.
-// Бот по-прежнему будет работать через Telegram API.
+// 1. Запускаем бота в режиме опроса (polling)
+bot.launch();
+
+// 2. Создаем и запускаем простой HTTP-сервер для health-check'ов Render
 const PORT = process.env.PORT || 3000;
-bot.launch({
-  webhook: {
-    domain: process.env.RENDER_EXTERNAL_URL,
-    port: PORT
-  }
-});
-
-// Создаем простой сервер, чтобы отвечать на проверки Render
 const http = require('http');
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -283,3 +310,26 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Сервер для health-check'ов запущен на порту ${PORT}`);
 });
+
+// 3. Корректное завершение работы
+process.once('SIGINT', () => {
+  console.log("\nПолучен SIGINT. Останавливаю бота...");
+  db.close((err) => {
+    if (err) console.error(err.message);
+    console.log('Соединение с БД закрыто.');
+    bot.stop('SIGINT');
+    server.close(() => console.log('Сервер остановлен.'));
+  });
+});
+
+process.once('SIGTERM', () => {
+  console.log("\nПолучен SIGTERM. Останавливаю бота...");
+  db.close((err) => {
+    if (err) console.error(err.message);
+    console.log('Соединение с БД закрыто.');
+    bot.stop('SIGTERM');
+    server.close(() => console.log('Сервер остановлен.'));
+  });
+});
+
+console.log('TimeTravel Bot запущен! Иди в Telegram → /start');
