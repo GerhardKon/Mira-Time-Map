@@ -1,13 +1,16 @@
 require('dotenv').config();
-const { Telegraf } = require('telegraf');
-const sources = JSON.parse(fs.readFileSync('sources.json', 'utf8'));
-const fetch = require('node-fetch');
 const fs = require('fs');
+const { Telegraf } = require('telegraf');
+const fetch = require('node-fetch');
 const sqlite3 = require('sqlite3').verbose();
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+// Загружаем данные из JSON-файлов ПОСЛЕ того, как подключили `fs`
 const characters = JSON.parse(fs.readFileSync('characters.json', 'utf8'));
-const db = new sqlite3.Database('users.db');
+const sources = JSON.parse(fs.readFileSync('sources.json', 'utf8'));
+
+const bot = new Telegraf(process.env.BOT_TOKEN);
+const dbPath = process.env.DATA_DIR ? `${process.env.DATA_DIR}/users.db` : './users.db';
+const db = new sqlite3.Database(dbPath);
 
 // ИНИЦИАЛИЗАЦИЯ БД (создаем таблицу, если ее нет)
 db.serialize(() => {
@@ -216,6 +219,7 @@ process.once('SIGTERM', () => {
     bot.stop('SIGTERM');
   });
 });
+
 
 
 console.log('TimeTravel Bot запущен! Иди в Telegram → /start');
