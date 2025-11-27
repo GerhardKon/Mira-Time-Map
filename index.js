@@ -1,40 +1,23 @@
 // ===================================================================
-// TimeTravel Bot - Финальная версия
-// Автор: Gerhard Kon
-// AI-помощник: GPT-4
-//
-// ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ (Environment Variables):
-// BOT_TOKEN - Токен твоего бота от @BotFather
-// GROQ_API_KEY - Ключ от Groq (для быстрого и дешевого AI)
-// OPENAI_API_KEY - Ключ от OpenAI (для мощного GPT-4o)
-// AI_PROVIDER - 'groq' или 'openai' (по умолчанию 'groq')
-// DATA_DIR - Путь к постоянному диску (автоматически на Render)
-//
+// TimeTravel Bot - Упрощенная версия (только Groq)
 // ===================================================================
 
-// ===================================================================
-// ШАГ 1: ПОДКЛЮЧЕНИЕ БИБЛИОТЕК
-// ===================================================================
 require('dotenv').config();
 const fs = require('fs');
 const { Telegraf } = require('telegraf');
 const fetch = require('node-fetch');
 const sqlite3 = require('sqlite3').verbose();
 
-// ===================================================================
-// ШАГ 2: ЗАГРУЗКА ДАННЫХ И ИНИЦИАЛИЗАЦИЯ
-// ===================================================================
-
-// Загружаем персонажей и источники из JSON-файлов
+// Загружаем персонажей и источники
 const characters = JSON.parse(fs.readFileSync('characters.json', 'utf8'));
 const sources = JSON.parse(fs.readFileSync('sources.json', 'utf8'));
 
-// Инициализируем бота и базу данных
+// Инициализируем бота и БД
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const dbPath = process.env.DATA_DIR ? `${process.env.DATA_DIR}/users.db` : './users.db';
 const db = new sqlite3.Database(dbPath);
 
-// Создаем таблицу в БД, если она еще не существует
+// Создаем таблицу в БД, если ее нет
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -47,82 +30,49 @@ db.serialize(() => {
 });
 
 // ===================================================================
-// ШАГ 3: ОПРЕДЕЛЕНИЕ ВСЕХ ФУНКЦИЙ
+// ФУНКЦИИ
 // ===================================================================
 
-/**
- * Отправляет запрос к выбранному AI-провайдеру (Groq или OpenAI).
- * @param {Array} history - История диалога.
- * @param {string} system - Системный промпт персонажа.
- * @returns {Promise<string>} - Ответ от AI.
- */
+// Функция для обращения к Groq
 async function askAI(history, system) {
-  const provider = process.env.AI_PROVIDER || 'groq'; // По умолчанию Groq
-
   const messages = [
     { role: "system", content: system },
     ...history
   ];
 
-  console.log(`Запрос в ${provider} →`, JSON.stringify(messages).substring(0, 200) + '...');
+  console.log(`Запрос в Groq →`, JSON.stringify(messages).substring(0, 200) + '...');
 
   try {
-    if (provider === 'openai') {
-      // Проверяем наличие ключа перед использованием
-      if (!process.env.OPENAI_API_KEY) {
-        console.error('КРИТИЧЕСКАЯ ОШИБКА: AI_PROVIDER=openai, но OPENAI_API_KEY не найден!');
-        return 'Ошибка конфигурации: ключ OpenAI не найден.';
-      }
-      
-      // "Ленивая" инициализация клиента OpenAI
-      const { OpenAI } = require('openai');
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-      const response = await openai.chat.completions.create({
-        model: 'gpt-4o',
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'llama-3.1-8b-instant',
         messages: messages,
         temperature: 0.7,
         max_tokens: 300,
-      });
-      return response.choices[0].message.content.trim();
+      })
+    });
 
-    } else {
-      // Логика для Groq
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: 'llama-3.1-8b-instant',
-          messages: messages,
-          temperature: 0.7,
-          max_tokens: 300,
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Groq API ошибка:', response.status, errorData);
-        return 'ИИ-сервис временно недоступен. Попробуй позже.';
-      }
-
-      const data = await response.json();
-      return data.choices[0].message.content.trim();
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('Groq API ошибка:', response.status, errorData);
+      return 'ИИ-сервис временно недоступен. Попробуй позже.';
     }
 
+    const data = await response.json();
+    return data.choices[0].message.content.trim();
+
   } catch (error) {
-    console.error(`Ошибка при запросе к ${provider}:`, error.message);
+    console.error('Ошибка при запросе к Groq:', error.message);
     return 'Произошла ошибка связи с ИИ-сервисом.';
   }
 }
 
-/**
- * Получает данные пользователя из БД. Если пользователя нет, создает его.
- * @param {number} userId - ID пользователя в Telegram.
- * @returns {Promise<Object>} - Объект с данными пользователя.
- */
+// Функции для работы с БД
 async function getUser(userId) {
   return new Promise((resolve) => {
     db.get(`SELECT * FROM users WHERE user_id = ?`, [userId], (err, row) => {
@@ -143,11 +93,6 @@ async function getUser(userId) {
   });
 }
 
-/**
- * Обновляет данные пользователя в БД.
- * @param {number} userId - ID пользователя.
- * @param {Object} data - Новые данные для обновления.
- */
 function updateUser(userId, data) {
   db.run(
     `UPDATE users SET messages = ?, unlocked = ?, current_char = ?, history = ? WHERE user_id = ?`,
@@ -159,10 +104,9 @@ function updateUser(userId, data) {
 }
 
 // ===================================================================
-// ШАГ 4: ОБРАБОТЧИКИ КОМАНД И СООБЩЕНИЙ
+// ОБРАБОТЧИКИ
 // ===================================================================
 
-// Команда /start
 bot.start(async (ctx) => {
   const user = await getUser(ctx.from.id);
   const keyboard = characters.map(ch => [{
@@ -176,15 +120,12 @@ bot.start(async (ctx) => {
   );
 });
 
-// Обработка нажатий на кнопки
 bot.on('callback_query', async (ctx) => {
   const action = ctx.callbackQuery.data;
   const user = await getUser(ctx.from.id);
 
-  // --- Обработка интерактивных кнопок Эйнштейна ---
   if (action.startsWith('einstein_')) {
     await ctx.answerCbQuery();
-    
     let promptForAI = "";
     if (action === 'einstein_paradox') {
       promptForAI = "Расскажи мне о самых известных парадоксах теории относительности.";
@@ -201,47 +142,37 @@ bot.on('callback_query', async (ctx) => {
     updateUser(ctx.from.id, user);
 
     await ctx.reply(answer);
-    return; // Важно, чтобы не идти дальше
+    return;
   }
 
-  // --- СТАРАЯ ЛОГИКА ВЫБОРА ПЕРСОНАЖА ---
   const character = characters.find(c => c.id === action);
-
   if (!character) return ctx.answerCbQuery('Ошибка');
   if (!user.unlocked.includes(character.id)) return ctx.answerCbQuery('Этот персонаж еще не разблокирован!');
 
   user.current_char = action;
-  user.history = []; // Сбрасываем историю при смене персонажа
+  user.history = [];
   updateUser(ctx.from.id, user);
 
   await ctx.answerCbQuery(`Выбран: ${character.name}`);
   await ctx.reply(`Ты общаешься с *${character.name}*\n\n${character.greeting || "Пиши что угодно!"}`, { parse_mode: 'Markdown' });
 });
 
-// Обработка текстовых сообщений
 bot.on('text', async (ctx) => {
   try {
     const user = await getUser(ctx.from.id);
-
     if (!user.current_char) {
       return ctx.reply('Сначала выбери персонажа через /start');
     }
 
     const char = characters.find(c => c.id === user.current_char);
-    
-    // Добавляем сообщение пользователя в историю
     user.history.push({ role: 'user', content: ctx.message.text });
-    
-    // Получаем ответ от AI
     const answer = await askAI(user.history, char.system);
     user.history.push({ role: 'assistant', content: answer });
 
-    // Ограничиваем историю
     if (user.history.length > 10) {
         user.history = user.history.slice(-10);
     }
 
-    // --- ЛОГИКА ДЛЯ ССЫЛОК У ЭЙНШТЕЙНА ---
     let finalMessage = answer;
     if (char.id === 'einstein') {
       if (answer.toLowerCase().includes('поделиться ссылкой') || answer.toLowerCase().includes('подробный материал')) {
@@ -254,7 +185,6 @@ bot.on('text', async (ctx) => {
       }
     }
     
-    // --- ЛОГИКА ДЛЯ КНОПОК У ЭЙНШТЕЙНА ---
     let keyboard = null;
     if (answer.includes('[OFFER_BUTTONS]')) {
       finalMessage = answer.replace('[OFFER_BUTTONS]', '').trim();
@@ -268,7 +198,6 @@ bot.on('text', async (ctx) => {
       };
     }
 
-    // Обновляем счетчик сообщений и проверяем разблокировки
     user.messages += 1;
     let newUnlock = null;
     for (const ch of characters) {
@@ -293,13 +222,11 @@ bot.on('text', async (ctx) => {
 });
 
 // ===================================================================
-// ШАГ 5: ЗАПУСК БОТА И СЕРВЕРА ДЛЯ RENDER
+// ЗАПУСК
 // ===================================================================
 
-// 1. Запускаем бота в режиме опроса (polling)
 bot.launch();
 
-// 2. Создаем и запускаем простой HTTP-сервер для health-check'ов Render
 const PORT = process.env.PORT || 3000;
 const http = require('http');
 const server = http.createServer((req, res) => {
@@ -311,23 +238,12 @@ server.listen(PORT, () => {
   console.log(`Сервер для health-check'ов запущен на порту ${PORT}`);
 });
 
-// 3. Корректное завершение работы
 process.once('SIGINT', () => {
   console.log("\nПолучен SIGINT. Останавливаю бота...");
   db.close((err) => {
     if (err) console.error(err.message);
     console.log('Соединение с БД закрыто.');
     bot.stop('SIGINT');
-    server.close(() => console.log('Сервер остановлен.'));
-  });
-});
-
-process.once('SIGTERM', () => {
-  console.log("\nПолучен SIGTERM. Останавливаю бота...");
-  db.close((err) => {
-    if (err) console.error(err.message);
-    console.log('Соединение с БД закрыто.');
-    bot.stop('SIGTERM');
     server.close(() => console.log('Сервер остановлен.'));
   });
 });
